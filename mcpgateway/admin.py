@@ -1377,19 +1377,6 @@ def _resolve_root_path(request: Request) -> str:
     return root_path.rstrip("/")
 
 
-def _admin_cookie_path(request: Request) -> str:
-    """Build admin cookie path honoring ASGI root_path.
-
-    Args:
-        request: Incoming request used to read ASGI ``root_path``.
-
-    Returns:
-        Admin cookie path scoped under the deployed app root.
-    """
-    root_path = _resolve_root_path(request)
-    return f"{root_path}/admin" if root_path else "/admin"
-
-
 def _normalize_origin_parts(scheme: str, netloc: str) -> tuple[str, str, int]:
     """Normalize origin components for exact same-origin comparisons.
 
@@ -1493,11 +1480,12 @@ def _set_admin_csrf_cookie(request: Request, response: Response) -> str:
 
     use_secure = (settings.environment == "production") or settings.secure_cookies
     max_age = max(300, int(getattr(settings, "token_expiry", 60)) * 60)
+    cookie_path = _resolve_root_path(request) or "/"
     response.set_cookie(
         key=ADMIN_CSRF_COOKIE_NAME,
         value=csrf_token,
         max_age=max_age,
-        path=_admin_cookie_path(request),
+        path=cookie_path,
         httponly=False,
         secure=use_secure,
         samesite="strict",
@@ -1515,7 +1503,7 @@ def _clear_admin_csrf_cookie(request: Request, response: Response) -> None:
     use_secure = (settings.environment == "production") or settings.secure_cookies
     response.delete_cookie(
         key=ADMIN_CSRF_COOKIE_NAME,
-        path=_admin_cookie_path(request),
+        path=_resolve_root_path(request) or "/",
         secure=use_secure,
         httponly=False,
         samesite="strict",
