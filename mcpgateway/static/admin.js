@@ -2468,7 +2468,7 @@ function extractKPIData(data) {
 
         const avgResponseTime =
             totalExecutions > 0 && weightedResponseSum > 0
-                ? weightedResponseSum / totalExecutions
+                ? (weightedResponseSum / totalExecutions) * 1000
                 : null;
 
         const successRate =
@@ -2841,12 +2841,12 @@ function createTopPerformersTable(entityType, data, isActive) {
         );
         row.appendChild(execCell);
 
-        // Avg Response Time
+        // Avg Response Time (API returns seconds; convert to ms for display)
         const avgTimeCell = document.createElement("td");
         avgTimeCell.className =
             "px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 sm:px-6 sm:py-4";
-        const avgTime = item.avg_response_time || item.avgResponseTime;
-        avgTimeCell.textContent = avgTime ? `${Math.round(avgTime)}ms` : "N/A";
+        const avgTime = item.avg_response_time ?? item.avgResponseTime;
+        avgTimeCell.textContent = avgTime != null ? `${Math.round(Number(avgTime) * 1000)}ms` : "N/A";
         row.appendChild(avgTimeCell);
 
         // Success Rate
@@ -3191,12 +3191,12 @@ function updateTableRows(tbody, entityType, data, page, perPage) {
         );
         row.appendChild(execCell);
 
-        // Avg Response Time
+        // Avg Response Time (API returns seconds; convert to ms for display)
         const avgTimeCell = document.createElement("td");
         avgTimeCell.className =
             "px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 sm:px-6 sm:py-4";
-        const avgTime = item.avg_response_time || item.avgResponseTime;
-        avgTimeCell.textContent = avgTime ? `${Math.round(avgTime)}ms` : "N/A";
+        const avgTime = item.avg_response_time ?? item.avgResponseTime;
+        avgTimeCell.textContent = avgTime != null ? `${Math.round(Number(avgTime) * 1000)}ms` : "N/A";
         row.appendChild(avgTimeCell);
 
         // Success Rate
@@ -3259,8 +3259,8 @@ function exportMetricsToCSV(topData) {
                             item.executions ||
                             0,
                     ),
-                    item.avg_response_time || item.avgResponseTime
-                        ? `${Math.round(item.avg_response_time || item.avgResponseTime)}ms`
+                    item.avg_response_time ?? item.avgResponseTime
+                        ? `${Math.round((item.avg_response_time ?? item.avgResponseTime) * 1000)}ms`
                         : "N/A",
                     `${calculateSuccessRate(item)}%`,
                     formatLastUsed(item.last_execution || item.lastExecution),
@@ -3481,7 +3481,20 @@ function createMetricsCard(title, metrics) {
 
         const valueSpan = document.createElement("span");
         valueSpan.className = "font-medium dark:text-gray-200";
-        valueSpan.textContent = value === "N/A" ? "N/A" : String(value);
+        let displayValue;
+        if (value === "N/A") {
+            displayValue = "N/A";
+        } else if (metric.key === "avgResponseTime") {
+            const ms = Number(value);
+            displayValue = isNaN(ms) ? "N/A" : `${(ms * 1000).toFixed(1)} ms`;
+        } else if (metric.key === "lastExecutionTime") {
+            displayValue = typeof value === "string" && value.includes("T")
+                ? value.slice(0, 16).replace("T", " ")
+                : String(value);
+        } else {
+            displayValue = String(value);
+        }
+        valueSpan.textContent = displayValue;
 
         metricRow.appendChild(label);
         metricRow.appendChild(valueSpan);
