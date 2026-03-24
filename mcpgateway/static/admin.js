@@ -2841,12 +2841,16 @@ function createTopPerformersTable(entityType, data, isActive) {
         );
         row.appendChild(execCell);
 
-        // Avg Response Time (API returns seconds; convert to ms for display)
+        // Avg Response Time
         const avgTimeCell = document.createElement("td");
         avgTimeCell.className =
             "px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 sm:px-6 sm:py-4";
         const avgTime = item.avg_response_time ?? item.avgResponseTime;
-        avgTimeCell.textContent = avgTime != null ? `${Math.round(Number(avgTime) * 1000)}ms` : "N/A";
+        if (avgTime != null) {
+            avgTimeCell.textContent = `${Math.round(Number(avgTime) * 1000)}ms`;
+        } else {
+            avgTimeCell.textContent = "N/A";
+        }
         row.appendChild(avgTimeCell);
 
         // Success Rate
@@ -3191,12 +3195,16 @@ function updateTableRows(tbody, entityType, data, page, perPage) {
         );
         row.appendChild(execCell);
 
-        // Avg Response Time (API returns seconds; convert to ms for display)
+        // Avg Response Time
         const avgTimeCell = document.createElement("td");
         avgTimeCell.className =
             "px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 sm:px-6 sm:py-4";
         const avgTime = item.avg_response_time ?? item.avgResponseTime;
-        avgTimeCell.textContent = avgTime != null ? `${Math.round(Number(avgTime) * 1000)}ms` : "N/A";
+        if (avgTime != null) {
+            avgTimeCell.textContent = `${Math.round(Number(avgTime) * 1000)}ms`;
+        } else {
+            avgTimeCell.textContent = "N/A";
+        }
         row.appendChild(avgTimeCell);
 
         // Success Rate
@@ -3249,6 +3257,12 @@ function exportMetricsToCSV(topData) {
     ["tools", "resources", "prompts", "gateways", "servers"].forEach((type) => {
         if (topData[type] && Array.isArray(topData[type])) {
             topData[type].forEach((item, index) => {
+                const avgRespRaw =
+                    item.avg_response_time ?? item.avgResponseTime;
+                const avgRespDisplay =
+                    avgRespRaw != null
+                        ? `${Math.round(Number(avgRespRaw) * 1000)}ms`
+                        : "N/A";
                 rows.push([
                     type,
                     index + 1,
@@ -3259,9 +3273,7 @@ function exportMetricsToCSV(topData) {
                             item.executions ||
                             0,
                     ),
-                    item.avg_response_time ?? item.avgResponseTime
-                        ? `${Math.round((item.avg_response_time ?? item.avgResponseTime) * 1000)}ms`
-                        : "N/A",
+                    avgRespDisplay,
                     `${calculateSuccessRate(item)}%`,
                     formatLastUsed(item.last_execution || item.lastExecution),
                 ]);
@@ -3481,20 +3493,16 @@ function createMetricsCard(title, metrics) {
 
         const valueSpan = document.createElement("span");
         valueSpan.className = "font-medium dark:text-gray-200";
-        let displayValue;
-        if (value === "N/A") {
-            displayValue = "N/A";
-        } else if (metric.key === "avgResponseTime") {
-            const ms = Number(value);
-            displayValue = isNaN(ms) ? "N/A" : `${(ms * 1000).toFixed(1)} ms`;
-        } else if (metric.key === "lastExecutionTime") {
-            displayValue = typeof value === "string" && value.includes("T")
-                ? value.slice(0, 16).replace("T", " ")
-                : String(value);
+        if (metric.key === "avgResponseTime" && value !== "N/A") {
+            valueSpan.textContent = `${(Number(value) * 1000).toFixed(1)}ms`;
+        } else if (metric.key === "lastExecutionTime" && value !== "N/A") {
+            valueSpan.textContent =
+                typeof value === "string"
+                    ? value.slice(0, 16).replace("T", " ")
+                    : String(value);
         } else {
-            displayValue = String(value);
+            valueSpan.textContent = value === "N/A" ? "N/A" : String(value);
         }
-        valueSpan.textContent = displayValue;
 
         metricRow.appendChild(label);
         metricRow.appendChild(valueSpan);
