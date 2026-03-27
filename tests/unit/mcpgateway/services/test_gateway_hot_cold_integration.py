@@ -456,3 +456,138 @@ class TestFailOpenBehavior:
                         await gateway_service._check_single_gateway_health(mock_gateway, user_email="test@example.com")
                     except Exception as e:
                         pytest.fail(f"Health check with auto-refresh should not raise exception on classification error: {e}")
+
+    @pytest.mark.asyncio
+    async def test_mark_poll_completed_health_exception_ignored(self, gateway_service_with_classification):
+        """Test that exceptions from mark_poll_completed(health) are silently ignored."""
+        gateway_service, mock_classification = gateway_service_with_classification
+
+        # Health check is due, but mark_poll_completed raises
+        mock_classification.should_poll_server = AsyncMock(return_value=True)
+        mock_classification.mark_poll_completed = AsyncMock(side_effect=Exception("Redis write error"))
+
+        mock_gateway = _make_mock_gateway(url="http://test-server:8000")
+
+        with (
+            patch("mcpgateway.services.gateway_service.fresh_db_session") as mock_fresh_db,
+            patch("mcpgateway.services.gateway_service.get_isolated_http_client") as mock_get_client,
+            patch.object(gateway_service, "_refresh_gateway_tools_resources_prompts", AsyncMock(return_value={"added": 0, "updated": 0, "removed": 0})),
+        ):
+            mock_session = MagicMock()
+            mock_fresh_db.return_value.__enter__.return_value = mock_session
+            mock_session.execute.return_value.scalar_one_or_none.return_value = mock_gateway
+            mock_session.commit = MagicMock()
+
+            # Proper async context manager chain for `async with client.stream(...) as response`
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = MagicMock()
+            mock_stream_cm = MagicMock()
+            mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client = MagicMock()
+            mock_http_client.stream = MagicMock(return_value=mock_stream_cm)
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_http_client)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+            mock_get_client.return_value = mock_client_cm
+
+            # Exception from mark_poll_completed must not propagate
+            await gateway_service._check_single_gateway_health(mock_gateway, user_email="test@example.com")
+
+        mock_classification.mark_poll_completed.assert_any_await("http://test-server:8000", "health")
+
+    @pytest.mark.asyncio
+    async def test_auto_refresh_skipped_when_tools_classification_not_due(self, gateway_service_with_classification, monkeypatch):
+        """Test auto-refresh is skipped when classification says tools are not due, even after health check passes."""
+        monkeypatch.setattr("mcpgateway.services.gateway_service.settings.auto_refresh_servers", True)
+
+        gateway_service, mock_classification = gateway_service_with_classification
+
+        # Health poll is due; tools poll is not due
+        async def _poll_side_effect(url, poll_type):
+            if poll_type == "health":
+                return True
+            return False  # tools not due
+
+        mock_classification.should_poll_server = AsyncMock(side_effect=_poll_side_effect)
+        mock_classification.mark_poll_completed = AsyncMock()
+
+        mock_gateway = _make_mock_gateway(url="http://test-server:8000")
+        mock_refresh = AsyncMock()
+
+        with (
+            patch("mcpgateway.services.gateway_service.fresh_db_session") as mock_fresh_db,
+            patch("mcpgateway.services.gateway_service.get_isolated_http_client") as mock_get_client,
+            patch.object(gateway_service, "_refresh_gateway_tools_resources_prompts", mock_refresh),
+        ):
+            mock_session = MagicMock()
+            mock_fresh_db.return_value.__enter__.return_value = mock_session
+            mock_session.execute.return_value.scalar_one_or_none.return_value = mock_gateway
+            mock_session.commit = MagicMock()
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = MagicMock()
+            mock_stream_cm = MagicMock()
+            mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client = MagicMock()
+            mock_http_client.stream = MagicMock(return_value=mock_stream_cm)
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_http_client)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+            mock_get_client.return_value = mock_client_cm
+
+            await gateway_service._check_single_gateway_health(mock_gateway, user_email="test@example.com")
+
+        # Tools refresh must NOT have been called
+        mock_refresh.assert_not_awaited()
+        # Both poll types checked
+        assert mock_classification.should_poll_server.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_mark_poll_completed_tool_discovery_exception_ignored(self, gateway_service_with_classification, monkeypatch):
+        """Test that exceptions from mark_poll_completed(tool_discovery) are silently ignored."""
+        monkeypatch.setattr("mcpgateway.services.gateway_service.settings.auto_refresh_servers", True)
+
+        gateway_service, mock_classification = gateway_service_with_classification
+
+        # Both health and tools polls are due
+        mock_classification.should_poll_server = AsyncMock(return_value=True)
+
+        # mark_poll_completed raises only for tool_discovery
+        async def _mark_side_effect(url, poll_type):
+            if poll_type == "tool_discovery":
+                raise Exception("Redis write error")
+
+        mock_classification.mark_poll_completed = AsyncMock(side_effect=_mark_side_effect)
+
+        mock_gateway = _make_mock_gateway(url="http://test-server:8000", name="test-gateway")
+        mock_gateway.last_refresh_at = None
+
+        with (
+            patch.object(gateway_service, "_refresh_gateway_tools_resources_prompts", AsyncMock(return_value={"added": 0, "updated": 0, "removed": 0})),
+            patch("mcpgateway.services.gateway_service.fresh_db_session") as mock_fresh_db,
+            patch("mcpgateway.services.gateway_service.get_isolated_http_client") as mock_get_client,
+        ):
+            mock_session = MagicMock()
+            mock_fresh_db.return_value.__enter__.return_value = mock_session
+            mock_session.execute.return_value.scalar_one_or_none.return_value = mock_gateway
+            mock_session.commit = MagicMock()
+
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = MagicMock()
+            mock_stream_cm = MagicMock()
+            mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client = MagicMock()
+            mock_http_client.stream = MagicMock(return_value=mock_stream_cm)
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_http_client)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+            mock_get_client.return_value = mock_client_cm
+
+            # Exception from mark_poll_completed(tool_discovery) must not propagate
+            await gateway_service._check_single_gateway_health(mock_gateway, user_email="test@example.com")
