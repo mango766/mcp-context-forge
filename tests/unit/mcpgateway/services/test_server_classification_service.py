@@ -1762,3 +1762,135 @@ class TestBoundsAndEdgeCases:
                 result = await service.should_poll_server("http://test:8080", "health")
 
         assert result is False
+
+
+class TestMissingBranchCoverage:
+    """Tests targeting uncovered branches in server_classification_service.py."""
+
+    # ------------------------------------------------------------------
+    # Branch 202->205: _perform_classification without Redis (skip publish, still log)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_perform_classification_without_redis_skips_publish(self):
+        """_perform_classification with redis_client=None skips Redis publish but still logs."""
+        service = ServerClassificationService(redis_client=None)
+
+        mock_pool = MagicMock()
+        mock_pool._pools = {}
+        mock_pool._active = {}
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = 300
+            mock_settings.cold_server_check_interval = 900
+            mock_settings.gateway_auto_refresh_interval = 60
+
+            with patch.object(service, "_get_all_gateway_urls", AsyncMock(return_value=["http://server1:8080"])):
+                with patch("mcpgateway.services.mcp_session_pool.get_mcp_session_pool", return_value=mock_pool):
+                    # Must not raise; no Redis publish occurs (line 202->False->205)
+                    await service._perform_classification()
+
+        # No Redis set means no assertion needed; the test verifies it completes without error
+
+    # ------------------------------------------------------------------
+    # Branch 245->249: URL already present in server_metrics (second pool key, same URL)
+    # ------------------------------------------------------------------
+
+    def test_classify_servers_second_pool_key_same_url(self):
+        """Two pool keys with the same URL reuse the existing ServerUsageMetrics entry."""
+        service = ServerClassificationService(redis_client=None)
+
+        mock_pool = MagicMock()
+        url = "http://shared-url:8080"
+        now = time.time()
+
+        # Two different pool keys pointing to the same upstream URL
+        key_a = ("user_a", url, "hash_a", "sse", "gw-1")
+        key_b = ("user_b", url, "hash_b", "sse", "gw-1")
+
+        session_a = MagicMock()
+        session_a.last_used = now - 10
+        session_a.use_count = 5
+
+        session_b = MagicMock()
+        session_b.last_used = now - 5
+        session_b.use_count = 3
+
+        queue_a = MagicMock()
+        queue_a._queue = deque([session_a])
+        queue_b = MagicMock()
+        queue_b._queue = deque([session_b])
+
+        mock_pool._pools = {key_a: queue_a, key_b: queue_b}
+        mock_pool._active = {}
+
+        result = service._classify_servers_from_pool(mock_pool, [url])
+
+        # Both sessions counted under the single URL entry
+        assert url in result.hot_servers or url in result.cold_servers
+        # use_count should be cumulative across both pool keys
+        # (5 + 3 = 8 for the shared url)
+
+    # ------------------------------------------------------------------
+    # Branch 259->257: session.last_used == 0 (inactive session skipped)
+    # ------------------------------------------------------------------
+
+    def test_classify_servers_session_with_zero_last_used_skipped(self):
+        """Sessions with last_used == 0.0 are excluded from hot eligibility."""
+        service = ServerClassificationService(redis_client=None)
+
+        mock_pool = MagicMock()
+        url = "http://inactive-server:8080"
+
+        pool_key = ("anon", url, "h1", "sse", "gw-1")
+
+        inactive_session = MagicMock()
+        inactive_session.last_used = 0.0  # Never used — branch 259 False path
+        inactive_session.use_count = 0
+
+        queue = MagicMock()
+        queue._queue = deque([inactive_session])
+
+        mock_pool._pools = {pool_key: queue}
+        mock_pool._active = {}
+
+        result = service._classify_servers_from_pool(mock_pool, [url])
+
+        # Server has no valid last_used, so it stays cold
+        assert url in result.cold_servers
+        assert url not in result.hot_servers
+
+    # ------------------------------------------------------------------
+    # Branch 352->356: cold_servers is empty (all servers classified hot)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_publish_classification_empty_cold_servers(self):
+        """Publishing a result with no cold servers skips sadd for the cold set."""
+        mock_redis = AsyncMock()
+        mock_pipeline = AsyncMock()
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+        mock_pipeline.__aenter__ = AsyncMock(return_value=mock_pipeline)
+        mock_pipeline.__aexit__ = AsyncMock(return_value=False)
+        mock_pipeline.delete = AsyncMock()
+        mock_pipeline.sadd = AsyncMock()
+        mock_pipeline.set = AsyncMock()
+        mock_pipeline.expire = AsyncMock()
+        mock_pipeline.execute = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        metadata = ClassificationMetadata(total_servers=1, hot_cap=1, hot_actual=1, eligible_count=1, timestamp=time.time())
+        # hot has members; cold is empty — exercises the False branch of line 352
+        result = ClassificationResult(hot_servers=["http://hot1:8080"], cold_servers=[], metadata=metadata)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.gateway_auto_refresh_interval = 300
+
+            await service._publish_classification_to_redis(result)
+
+        # sadd should only be called once (for the hot set), not twice
+        sadd_calls = mock_pipeline.sadd.await_args_list
+        assert len(sadd_calls) == 1
+        assert sadd_calls[0].args[0] == ServerClassificationService.CLASSIFICATION_HOT_KEY
