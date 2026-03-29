@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+import math
 import time
 from typing import Any, Dict, Optional
 
@@ -92,7 +93,7 @@ class _Window:
         count: Number of requests in the current window.
     """
 
-    window_start: int
+    window_start: float
     count: int
 
 
@@ -137,7 +138,7 @@ class MemoryBackend:
 
     async def _sweep(self) -> None:
         """Remove all entries whose fixed window has expired."""
-        now = int(time.time())
+        now = time.time()
         async with self._lock:
             expired = [
                 k for k, w in self._store.items()
@@ -162,7 +163,7 @@ class MemoryBackend:
             return True, 0, 0, {"limited": False}
 
         count, window_seconds = _parse_rate(limit)
-        now = int(time.time())
+        now = time.time()
         win_key = f"{key}:{window_seconds}"
 
         async with self._lock:
@@ -170,19 +171,21 @@ class MemoryBackend:
 
             if not wnd or now - wnd.window_start >= window_seconds:
                 # New window
-                reset_timestamp = now + window_seconds
+                reset_at = now + window_seconds
+                reset_timestamp = math.ceil(reset_at)
                 self._store[win_key] = _Window(window_start=now, count=1)
                 return True, count, reset_timestamp, {"limited": True, "remaining": count - 1, "reset_in": window_seconds}
 
-            reset_timestamp = wnd.window_start + window_seconds
+            reset_at = wnd.window_start + window_seconds
+            reset_timestamp = math.ceil(reset_at)
             if wnd.count < count:
                 # Within limit
                 wnd.count += 1
-                reset_in = window_seconds - (now - wnd.window_start)
+                reset_in = max(0, math.ceil(reset_at - now))
                 return True, count, reset_timestamp, {"limited": True, "remaining": count - wnd.count, "reset_in": reset_in}
 
             # Exceeded
-            reset_in = window_seconds - (now - wnd.window_start)
+            reset_in = max(0, math.ceil(reset_at - now))
             return False, count, reset_timestamp, {"limited": True, "remaining": 0, "reset_in": reset_in}
 
 
