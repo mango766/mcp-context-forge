@@ -1377,6 +1377,19 @@ def _resolve_root_path(request: Request) -> str:
     return root_path.rstrip("/")
 
 
+def _admin_cookie_path(request: Request) -> str:
+    """Build admin cookie path honoring ASGI root_path.
+
+    Args:
+        request: Incoming request used to read ASGI ``root_path``.
+
+    Returns:
+        Admin cookie path scoped under the deployed app root.
+    """
+    root_path = _resolve_root_path(request)
+    return f"{root_path}/admin" if root_path else "/admin"
+
+
 def _normalize_origin_parts(scheme: str, netloc: str) -> tuple[str, str, int]:
     """Normalize origin components for exact same-origin comparisons.
 

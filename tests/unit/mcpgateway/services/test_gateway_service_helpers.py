@@ -75,18 +75,18 @@ def test_gateway_service_lock_path_absolute(monkeypatch):
 
 
 def test_gateway_service_convert_gateway_to_read(monkeypatch):
+    # First-Party
+    from mcpgateway.db import Gateway as DbGateway
+
     service = GatewayService()
 
-    gateway = SimpleNamespace(
-        auth_value={"token": "secret"},
-        tags=["Analytics", "ml"],
-        created_by="tester",
-        modified_by=None,
-        created_at=None,
-        updated_at=None,
-        version=None,
-        team=None,
-    )
+    gateway = DbGateway()
+    gateway.auth_value = {"token": "secret"}
+    gateway.tags = ["Analytics", "ml"]
+    gateway.created_by = "tester"
+    gateway.modified_by = None
+    gateway.version = None
+    gateway.tools = []
 
     # Mock model_validate to return a mock that returns itself when masked() is called
     # and also stores the original dict for assertions

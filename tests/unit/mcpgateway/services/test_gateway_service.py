@@ -84,6 +84,9 @@ def _make_execute_result(*, scalar: _R | None = None, scalars_list: list[_R] | N
 
 
 def _make_gateway(**overrides):
+    # Fields present in GatewayCreate schema but NOT mapped columns/relationships in DbGateway
+    _SCHEMA_ONLY = {"auth_headers", "auth_query_param_key", "auth_query_param_value", "one_time_auth"}
+
     base = {
         "name": "test-gateway",
         "url": "http://example.com",
@@ -112,7 +115,14 @@ def _make_gateway(**overrides):
         "version": 1,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+
+    orm_kwargs = {k: v for k, v in base.items() if k not in _SCHEMA_ONLY}
+    schema_only = {k: base[k] for k in _SCHEMA_ONLY if k in base}
+
+    gw = DbGateway(**orm_kwargs)
+    for key, value in schema_only.items():
+        setattr(gw, key, value)
+    return gw
 
 
 @pytest.fixture(autouse=True)
@@ -184,33 +194,33 @@ def gateway_service():
 
 @pytest.fixture
 def mock_gateway():
-    """Return a minimal but realistic DbGateway MagicMock."""
-    gw = MagicMock(spec=DbGateway)
+    """Return a minimal but realistic DbGateway instance."""
+    gw = DbGateway()
     gw.id = 1
     gw.name = "test_gateway"
     gw.url = "http://example.com/gateway"
     gw.description = "A test gateway"
     gw.capabilities = {"prompts": {"listChanged": True}, "resources": {"listChanged": True}, "tools": {"listChanged": True}}
-    gw.created_at = gw.updated_at = gw.last_seen = "2025-01-01T00:00:00Z"
     gw.enabled = True
     gw.reachable = True
+    gw.tags = []
+    gw.version = 1
+    gw.visibility = "public"
 
     # one dummy tool hanging off the gateway
     tool = MagicMock(spec=DbTool, id=101, name="dummy_tool")
     gw.tools = [tool]
     gw.resources = []  # Empty list for delete tests
     gw.prompts = []  # Empty list for delete tests
-    gw.federated_tools = []
+    gw.federated_tools = []  # Not an ORM column; kept for backward-compat with tests that set it
     gw.transport = "sse"
     gw.auth_value = {}
-    gw.team_id = 1  # Ensure team_id is a real value, not a MagicMock
+    gw.team_id = 1  # Ensure team_id is a real value
 
-    # Mock email_team relationship and team property
-    # Use instance-level assignment (MagicMock allows this)
+    # Set email_team so that the gw.team property returns "Test Team"
     mock_email_team = MagicMock()
     mock_email_team.name = "Test Team"
     gw.email_team = mock_email_team
-    gw.team = "Test Team"  # Instance-level mock for the team property
     return gw
 
 
@@ -5895,9 +5905,10 @@ class TestListGatewaysTokenTeams:
         mock_cache.hash_filters = MagicMock(return_value="h")
         monkeypatch.setattr("mcpgateway.services.gateway_service._get_registry_cache", lambda: mock_cache)
 
-        gw = MagicMock(spec=DbGateway)
+        gw = DbGateway()
         gw.id = 1
         gw.visibility = "public"
+        gw.tools = []
 
         # Mock unified_paginate to return cursor-based result
         monkeypatch.setattr(
@@ -5945,8 +5956,9 @@ class TestListGatewaysTokenTeams:
         mock_cache.hash_filters = MagicMock(return_value="h")
         monkeypatch.setattr("mcpgateway.services.gateway_service._get_registry_cache", lambda: mock_cache)
 
-        gw = MagicMock(spec=DbGateway)
+        gw = DbGateway()
         gw.id = 2
+        gw.tools = []
         monkeypatch.setattr(
             "mcpgateway.services.gateway_service.unified_paginate",
             AsyncMock(return_value=([gw], None)),
@@ -6081,8 +6093,9 @@ class TestListGatewaysTokenTeams:
         mock_cache.hash_filters = MagicMock(return_value="h")
         monkeypatch.setattr("mcpgateway.services.gateway_service._get_registry_cache", lambda: mock_cache)
 
-        gw = MagicMock(spec=DbGateway)
+        gw = DbGateway()
         gw.id = 1
+        gw.tools = []
         monkeypatch.setattr(
             "mcpgateway.services.gateway_service.unified_paginate",
             AsyncMock(return_value={"data": [gw], "pagination": {"page": 1}, "links": {}}),
