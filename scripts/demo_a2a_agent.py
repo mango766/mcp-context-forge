@@ -164,10 +164,8 @@ async def run_agent(request: Request) -> Response:
     - A2A protocol: {"parameters": {"query": "..."}}
     - Simple: {"query": "..."}
     """
-    # Capture and log raw body
+    # Parse request body
     body = await request.body()
-    print(f"Raw request body: {body.decode('utf-8')}")
-
     body_dict = json.loads(body)
 
     query_text = ""
@@ -185,23 +183,23 @@ async def run_agent(request: Request) -> Response:
                     if isinstance(part, dict) and part.get("kind") == "text":
                         query_text = part.get("text", "")
                         break
-            print(f"Extracted from JSONRPC message.parts: {query_text}")
+            print("Extracted query from JSONRPC message.parts")
         else:
             # Simple query or message string
             query_text = params.get("query") or params.get("message", "")
-            print(f"Extracted from JSONRPC params: {query_text}")
+            print("Extracted query from JSONRPC params")
     # Handle A2A protocol format
     elif "parameters" in body_dict and isinstance(body_dict["parameters"], dict):
         params = body_dict["parameters"]
         query_text = params.get("query") or params.get("message", "")
-        print(f"Extracted from A2A parameters: {query_text}")
+        print("Extracted query from A2A parameters")
     # Handle simple format
     elif "query" in body_dict:
         query_text = body_dict["query"]
-        print(f"Extracted from query field: {query_text}")
+        print("Extracted query from query field")
     elif "message" in body_dict:
         query_text = body_dict["message"]
-        print(f"Extracted from message field: {query_text}")
+        print("Extracted query from message field")
 
     if not query_text:
         query_text = "Hello"
