@@ -2199,6 +2199,7 @@ class TestResourceServiceContentSizeError:
         """Test that ContentSizeError is caught and re-raised during resource update."""
         # First-Party
         from mcpgateway.schemas import ResourceUpdate
+        from mcpgateway.services.content_security import ContentSizeError
 
         mock_resource.owner_email = "user@example.com"
         mock_db.get = MagicMock(return_value=mock_resource)
