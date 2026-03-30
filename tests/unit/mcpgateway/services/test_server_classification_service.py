@@ -32,13 +32,15 @@ class TestServerClassificationServiceInit:
 
     def test_init_without_redis(self):
         """Test service initialization without Redis."""
-        service = ServerClassificationService(redis_client=None)
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.gateway_auto_refresh_interval = 60
+            service = ServerClassificationService(redis_client=None)
 
-        assert service._redis is None
-        assert service._classification_task is None
-        assert service._instance_id.startswith("classifier_")
-        assert service._leader_ttl == 90
-        assert service._running is False
+            assert service._redis is None
+            assert service._classification_task is None
+            assert service._instance_id.startswith("classifier_")
+            assert service._leader_ttl == 90
+            assert service._running is False
 
     def test_init_with_redis(self):
         """Test service initialization with Redis."""
@@ -532,16 +534,18 @@ class TestLeaderElection:
         mock_redis = AsyncMock()
         mock_redis.set = AsyncMock(return_value=True)  # Lock acquired
 
-        service = ServerClassificationService(redis_client=mock_redis)
-        is_leader = await service._try_acquire_leader_lock()
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.gateway_auto_refresh_interval = 60
+            service = ServerClassificationService(redis_client=mock_redis)
+            is_leader = await service._try_acquire_leader_lock()
 
-        assert is_leader is True
-        mock_redis.set.assert_awaited_once_with(
-            ServerClassificationService.LEADER_KEY,
-            service._instance_id,
-            ex=90,
-            nx=True,  # Only if key doesn't exist
-        )
+            assert is_leader is True
+            mock_redis.set.assert_awaited_once_with(
+                ServerClassificationService.LEADER_KEY,
+                service._instance_id,
+                ex=90,
+                nx=True,  # Only if key doesn't exist
+            )
 
     @pytest.mark.asyncio
     async def test_try_acquire_leader_lock_with_redis_contention(self):
