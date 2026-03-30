@@ -9,7 +9,6 @@ SPDX-License-Identifier: Apache-2.0
 """
 
 # Standard
-import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -182,71 +181,6 @@ class TestHealthCheckHotColdIntegration:
 
         # Verify early return (should_poll_server called, health check not executed)
         mock_classification.should_poll_server.assert_awaited_once_with("http://cold-server:8000", "health")
-
-
-class TestAutoRefreshHotColdIntegration:
-    """Tests for auto-refresh integration with hot/cold polling."""
-
-    @pytest.mark.asyncio
-    async def test_auto_refresh_skipped_for_hot_server_not_due(self, gateway_service_with_classification):
-        """Test auto-refresh skipped when hot server not yet due for polling."""
-        gateway_service, mock_classification = gateway_service_with_classification
-
-        # Configure classification to skip polling
-        mock_classification.should_poll_server = AsyncMock(return_value=False)
-
-        mock_gateway = _make_mock_gateway(url="http://hot-server:8000")
-        mock_gateway.last_refresh_at = None  # Never refreshed before
-
-        # Result should reflect no refresh attempted
-        # (Verify by checking classification service was consulted)
-        with patch("mcpgateway.services.gateway_service.settings") as mock_settings:
-            mock_settings.auto_refresh_servers = True
-
-            # The actual test depends on the internal flow, but we verify consultation
-            # In real flow, should_poll_server("tools") would be called
-            result = await mock_classification.should_poll_server("http://hot-server:8000", "tools")
-
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_auto_refresh_proceeds_for_hot_server_due(self, gateway_service_with_classification):
-        """Test auto-refresh proceeds when hot server is due for polling."""
-        gateway_service, mock_classification = gateway_service_with_classification
-
-        # Configure classification to allow polling
-        mock_classification.should_poll_server = AsyncMock(return_value=True)
-
-        # Verify should_poll_server called with "tools" poll type
-        result = await mock_classification.should_poll_server("http://hot-server:8000", "tools")
-
-        assert result is True
-        mock_classification.should_poll_server.assert_awaited_once_with("http://hot-server:8000", "tools")
-
-    @pytest.mark.asyncio
-    async def test_auto_refresh_cold_server_skipped_when_not_due(self, gateway_service_with_classification):
-        """Test auto-refresh skipped for cold server not yet due."""
-        gateway_service, mock_classification = gateway_service_with_classification
-
-        # Cold server, polling not due
-        mock_classification.should_poll_server = AsyncMock(return_value=False)
-
-        result = await mock_classification.should_poll_server("http://cold-server:8000", "tools")
-
-        assert result is False
-        mock_classification.should_poll_server.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_auto_refresh_proceeds_when_classification_disabled(self, gateway_service_with_classification):
-        """Test auto-refresh always proceeds when classification disabled."""
-        gateway_service, mock_classification = gateway_service_with_classification
-
-        # Set classification service to None (feature disabled)
-        gateway_service._classification_service = None
-
-        # Without classification service, auto-refresh should proceed normally
-        # (This is verified by the absence of should_poll_server call)
-        assert gateway_service._classification_service is None
 
 
 class TestPollTypeIndependence:
