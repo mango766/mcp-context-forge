@@ -66,7 +66,7 @@ make serve-ssl                    # HTTPS on :4444 (creates certs if needed)
 make autoflake isort black pre-commit
 
 # Before committing, use ty, mypy and pyrefly to check just the new files, then run:
-make flake8 bandit interrogate pylint verify
+make ruff bandit interrogate pylint verify
 ```
 
 ## Authentication & RBAC Overview

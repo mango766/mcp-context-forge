@@ -31,7 +31,7 @@ make dev
 
 # Run quality checks before committing
 make autoflake isort black pre-commit
-make doctest test htmlcov flake8 pylint verify
+make doctest test htmlcov pylint verify
 ```
 
 Note that if the pre-commit check fails on detect secrets you need to identify if any secrets are in the code and remove them if necessary.
@@ -193,7 +193,7 @@ python3 -m mcpgateway --host 0.0.0.0 --port 8080
 make autoflake isort black pre-commit
 
 # Comprehensive linting
-make flake8 bandit interrogate pylint verify
+make bandit interrogate pylint verify
 
 # Quick lint for changed files only
 make lint-changed
@@ -217,7 +217,7 @@ make pre-commit
 # Complete quality pipeline (recommended before commits)
 make autoflake isort black pre-commit
 make doctest test htmlcov smoketest
-make flake8 bandit interrogate pylint verify
+make bandit interrogate pylint verify
 ```
 
 ### Nginx Cache Management
@@ -280,7 +280,6 @@ make autoflake          # Remove unused imports
 
 # Lint code
 make ruff               # Ruff linter (RUFF_MODE=check|fix|format)
-make flake8             # Style checker
 make pylint             # Advanced linting
 make mypy               # Type checking
 make bandit             # Security analysis
