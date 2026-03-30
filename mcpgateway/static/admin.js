@@ -8803,6 +8803,12 @@ function showTab(tabName) {
         const panel = safeGetElement(`${tabName}-panel`);
         if (panel) {
             panel.classList.remove("hidden");
+
+            // Reset scroll position on the main content area
+            const mainContent = document.querySelector('main.overflow-y-auto');
+            if (mainContent) {
+                mainContent.scrollTop = 0;
+            }
         } else {
             console.error(`Panel ${tabName}-panel not found`);
             const fallbackTab = getDefaultTabName();
