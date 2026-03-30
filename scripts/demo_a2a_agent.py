@@ -16,6 +16,7 @@ Press Ctrl+C to stop the server and unregister the agent.
 """
 
 import atexit
+import json
 import os
 import random
 import signal
@@ -167,7 +168,6 @@ async def run_agent(request: Request) -> Response:
     body = await request.body()
     print(f"Raw request body: {body.decode('utf-8')}")
 
-    import json
     body_dict = json.loads(body)
 
     query_text = ""

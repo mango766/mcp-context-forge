@@ -253,13 +253,14 @@ Before running the demo agent, ensure the following configuration:
 make dev
 
 # Terminal 2: Start the demo agent (auto-registers with ContextForge)
-# Option 1: Let the script generate the token
+# Option 1: Let the script generate the token internally
 PLATFORM_ADMIN_EMAIL=admin@example.com uv run python scripts/demo_a2a_agent.py
 
-# Option 2: Generate token manually (recommended for scripted access)
+# Option 2: Generate token manually for testing API calls (script still generates its own token)
 export TOKEN=$(python -m mcpgateway.utils.create_jwt_token \
   --username "admin@example.com" --exp 60)
 uv run python scripts/demo_a2a_agent.py
+# The $TOKEN variable is now available for the curl test commands below
 ```
 
 Note: The token generation uses your configured `JWT_SECRET_KEY` from `.env` (defaults to `my-test-key` for local development).
