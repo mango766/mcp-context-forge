@@ -77,8 +77,6 @@ plugins:
       detect_email: true
       detect_phone: false
       detect_ip_address: false  # Disabled for development
-      detect_aws_keys: true
-      detect_api_keys: true
       # Masking Settings
       default_mask_strategy: "partial"  # redact | partial | hash | tokenize | remove
       redaction_text: "[PII_REDACTED]"
@@ -320,15 +318,15 @@ plugins:
       allowed_mime_types: ["text/plain", "text/markdown", "text/html", "application/json"]
       allowed_extensions: [".md", ".txt", ".html", ".json"]
 
-  # Retry policy annotations
+  # Retry with exponential backoff — triggers real gateway re-invocation
   - name: "RetryWithBackoffPlugin"
     kind: "plugins.retry_with_backoff.retry_with_backoff.RetryWithBackoffPlugin"
-    description: "Annotates retry/backoff policy in metadata"
+    description: "Detects transient failures and asks the gateway to re-invoke the tool after a jittered exponential backoff delay"
     version: "0.1.0"
     author: "Mihai Criveti"
-    hooks: ["tool_post_invoke", "resource_post_fetch"]
-    tags: ["reliability", "retry"]
-    mode: "disabled"
+    hooks: ["tool_post_invoke"]
+    tags: ["retry", "backoff", "resilience"]
+    mode: "permissive"
     priority: 170
     conditions: []
     config:
@@ -336,6 +334,9 @@ plugins:
       backoff_base_ms: 200
       max_backoff_ms: 5000
       retry_on_status: [429, 500, 502, 503, 504]
+      jitter: true
+      check_text_content: false
+      tool_overrides: {}
 
   # Markdown cleaner
   - name: "MarkdownCleanerPlugin"
@@ -647,7 +648,6 @@ plugins:
     author: "ContextForge"
     hooks: ["prompt_pre_fetch", "tool_post_invoke", "resource_post_fetch"]
     tags: ["security", "secrets", "dlp"]
-    # mode: "enforce"
     mode: "disabled"
     priority: 51
     conditions: []
@@ -660,7 +660,7 @@ plugins:
         private_key_block: true
         jwt_like: true
         hex_secret_32: true
-        base64_24: true
+        base64_24: false  # Broad intrinsic-shape heuristic; keep opt-in because it can block ordinary 24+ char IDs and tokens
       redact: false
       redaction_text: "***REDACTED***"
       block_on_detection: true

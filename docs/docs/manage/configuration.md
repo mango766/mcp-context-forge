@@ -10,7 +10,7 @@ These variables have insecure defaults and **must be changed** before production
 
 | Variable | Description | Default | Action Required |
 |----------|-------------|---------|-----------------|
-| `JWT_SECRET_KEY` | Secret key for signing JWT tokens | `my-test-key` | Generate with `openssl rand -hex 32` |
+| `JWT_SECRET_KEY` | Secret key for signing JWT tokens | `my-test-key-but-now-longer-than-32-bytes` | Generate with `openssl rand -hex 32` |
 | `AUTH_ENCRYPTION_SECRET` | Passphrase for encrypting stored credentials | `my-test-salt` | Generate with `openssl rand -hex 32` |
 | `BASIC_AUTH_USER` | Username for HTTP Basic auth | `admin` | Change for production |
 | `BASIC_AUTH_PASSWORD` | Password for HTTP Basic auth | `changeme` | Set a strong password |
@@ -116,7 +116,7 @@ ContextForge supports multiple database backends with full feature parity across
 | `PLATFORM_ADMIN_EMAIL`      | Email for bootstrap platform admin user (auto-created with admin privileges) | `admin@example.com` | string      |
 | `AUTH_REQUIRED`             | Require authentication for all API routes                                    | `true`              | bool        |
 | `JWT_ALGORITHM`             | Algorithm used to sign the JWTs (`HS256` is default, HMAC-based)             | `HS256`             | PyJWT algs  |
-| `JWT_SECRET_KEY`            | Secret key used to **sign JWT tokens** for API access                        | `my-test-key`       | string      |
+| `JWT_SECRET_KEY`            | Secret key used to **sign JWT tokens** for API access                        | `my-test-key-but-now-longer-than-32-bytes`       | string      |
 | `JWT_PUBLIC_KEY_PATH`       | If an asymmetric algorithm is used, a public key is required                 | (empty)             | path to pem |
 | `JWT_PRIVATE_KEY_PATH`      | If an asymmetric algorithm is used, a private key is required                | (empty)             | path to pem |
 | `JWT_AUDIENCE`              | JWT audience claim for token validation                                      | `mcpgateway-api`    | string      |
@@ -154,7 +154,7 @@ ContextForge supports multiple database backends with full feature parity across
 !!! tip "JWT Token Generation"
     `JWT_SECRET_KEY` is used to sign JSON Web Tokens. Generate tokens via:
     ```bash
-    export MCPGATEWAY_BEARER_TOKEN=$(python3 -m mcpgateway.utils.create_jwt_token --username admin@example.com --exp 10080 --secret my-test-key)
+    export MCPGATEWAY_BEARER_TOKEN=$(python3 -m mcpgateway.utils.create_jwt_token --username admin@example.com --exp 10080 --secret my-test-key-but-now-longer-than-32-bytes)
     ```
 
 ### UI Features
@@ -525,7 +525,7 @@ ContextForge implements **OAuth 2.0 Dynamic Client Registration (RFC 7591)** and
 | `AUTO_CREATE_PERSONAL_TEAMS`             | Enable automatic personal team creation for new users | `true`   | bool    |
 | `PERSONAL_TEAM_PREFIX`                   | Personal team naming prefix (empty = derive from display name) | `""` | string  |
 | `MAX_TEAMS_PER_USER`                     | Maximum number of teams a user can belong to    | `50`       | int > 0 |
-| `MAX_MEMBERS_PER_TEAM`                   | Maximum number of members per team (platform admins are exempt from this limit) | `100`      | int > 0 |
+| `MAX_MEMBERS_PER_TEAM`                   | Default maximum members per team, resolved at check time. Teams without an explicit per-team override use this value. Platform admins are exempt from this limit. | `100`      | int > 0 |
 | `INVITATION_EXPIRY_DAYS`                 | Number of days before team invitations expire   | `7`        | int > 0 |
 | `REQUIRE_EMAIL_VERIFICATION_FOR_INVITES` | Require email verification for team invitations | `true`     | bool    |
 | `ALLOW_TEAM_CREATION`                    | Allow users to create organizational teams (admins always can) | `true`  | bool    |
@@ -877,7 +877,7 @@ The gateway includes built-in observability features for tracking HTTP requests,
 | :--- | :--- | :--- | :--- |
 | `JSON_SCHEMA_VALIDATION_STRICT` | Enforce strict JSON Schema validation for tools and prompts | `true` | bool |
 | `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS_ENABLED` | Enable forbidden pattern checks on tool descriptions | `true` | bool |
-| `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS` | Substrings blocked in tool descriptions | `["&&", ";", "||", "$(", "\|", "> ", "< "]` | JSON array |
+| `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS` | Substrings blocked in tool descriptions | `["&&", ";", "||", "$(", "> ", "< "]` | JSON array |
 
 **Strict Mode Scenarios:**
 

@@ -1952,7 +1952,7 @@ def validate_security_configuration():
     # Critical security checks (fail startup only if REQUIRE_STRONG_SECRETS=true)
     critical_issues = []
 
-    if settings.jwt_secret_key == "my-test-key" and not settings.dev_mode:  # nosec B105 - checking for default value
+    if settings.jwt_secret_key in ("my-test-key", "my-test-key-but-now-longer-than-32-bytes") and not settings.dev_mode:  # nosec B105 - checking for default values
         critical_issues.append("Using default JWT secret in non-dev mode. Set JWT_SECRET_KEY environment variable!")
 
     if settings.basic_auth_password.get_secret_value() == "changeme" and settings.mcpgateway_ui_enabled:  # nosec B105 - checking for default value
@@ -2037,7 +2037,7 @@ def log_security_recommendations(security_status: settings.SecurityStatus):
         logger.info("📋 SECURITY RECOMMENDATIONS:")
         logger.info("=" * 60)
 
-        if settings.jwt_secret_key == "my-test-key":  # nosec B105 - checking for default value
+        if settings.jwt_secret_key in ("my-test-key", "my-test-key-but-now-longer-than-32-bytes"):  # nosec B105 - checking for default value
             logger.info("  • Generate a strong JWT secret:")
             logger.info("    python3 -c 'import secrets; print(secrets.token_urlsafe(32))'")
 
@@ -2828,6 +2828,24 @@ class MCPPathRewriteMiddleware:
         # These paths may end with /mcp but should not be rewritten to the MCP transport
         if not original_path.startswith("/.well-known/"):
             if (original_path.endswith("/mcp") and original_path != "/mcp") or (original_path.endswith("/mcp/") and original_path != "/mcp/"):
+                # SECURITY: Only rewrite recognised MCP paths — /servers/{id}/mcp.
+                # Arbitrary prefixes (e.g. /foo/mcp) must NOT be rewritten to
+                # /mcp/ as that would expose the global MCP transport under
+                # undocumented aliases, broadening the externally reachable
+                # route surface.
+                if original_path.startswith("/servers/"):
+                    # Validate that a non-empty server_id segment is present.
+                    # Without this check, paths like /servers//mcp (empty ID)
+                    # would be rewritten and silently fall through (#3891).
+                    _srv_match = re.match(r"/servers/([^/]+)/mcp", original_path)
+                    if not _srv_match:
+                        response = ORJSONResponse({"detail": "Invalid server identifier"}, status_code=404)
+                        await response(scope, receive, send)
+                        return
+                else:
+                    # Not a /servers/ path — do not rewrite, pass through
+                    await self.application(scope, receive, send)
+                    return
                 # Rewrite to /mcp/ and continue through middleware (lets CORSMiddleware handle preflight)
                 scope["path"] = "/mcp/"
                 await self.application(scope, receive, send)
@@ -3210,6 +3228,32 @@ def get_db(request: Request = None):
             db.close()
         except Exception:
             pass  # nosec B110 - Best effort cleanup on already-failed prompt bridge sessions
+
+
+async def require_valid_server(server_id: str, db: Session = Depends(get_db)) -> str:
+    """FastAPI dependency that validates a server_id exists in the database.
+
+    Provides a reusable, fail-closed guard for any server-scoped endpoint.
+    Uses the lightweight ``entity_exists()`` check — no eager loading.
+
+    Args:
+        server_id: Path parameter extracted by FastAPI.
+        db: Database session from the ``get_db`` dependency.
+
+    Returns:
+        The validated server_id string.
+
+    Raises:
+        HTTPException: 404 if the server does not exist, 503 on database errors.
+    """
+    try:
+        if not await server_service.entity_exists(db, server_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service unavailable — unable to verify server")
+    return server_id
 
 
 async def _read_request_json(request: Request) -> Any:
@@ -4077,7 +4121,7 @@ async def sse_endpoint(request: Request, server_id: str, db: Session = Depends(g
 
 @server_router.post("/{server_id}/message")
 @require_permission("servers.use")
-async def message_endpoint(request: Request, server_id: str, user=Depends(get_current_user_with_permissions)):
+async def message_endpoint(request: Request, server_id: str = Depends(require_valid_server), user=Depends(get_current_user_with_permissions)):
     """
     Handles incoming messages for a specific server.
 

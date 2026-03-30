@@ -1084,13 +1084,15 @@ class ToolUpdate(BaseModelWithConfigDict):
         # When VALIDATION_STRICT=false these patterns produce a warning only so
         # that MCP servers with Markdown-formatted descriptions (e.g. "> quote",
         # "< input", "cmd | grep") can be updated without error.
-        forbidden_patterns = ["&&", ";", "||", "$(", "|", "> ", "< "]
-        for pat in forbidden_patterns:
-            if pat in v:
-                if settings.validation_strict:
-                    raise ValueError(f"Description contains unsafe characters: '{pat}'")
-                logger.warning("Description contains potentially unsafe characters: '%s' (VALIDATION_STRICT=false, proceeding)", pat)
-                break
+        if settings.tool_description_forbidden_patterns_enabled:
+            for pat in settings.tool_description_forbidden_patterns:
+                if not pat or not pat.strip():
+                    continue
+                if pat in v:
+                    if settings.validation_strict:
+                        raise ValueError(f"Description contains unsafe characters: '{pat}'")
+                    logger.warning("Description contains potentially unsafe characters: '%s' (VALIDATION_STRICT=false, proceeding)", pat)
+                    break
 
         if len(v) > SecurityValidator.MAX_DESCRIPTION_LENGTH:
             # Truncate the description to the maximum allowed length
@@ -5871,7 +5873,7 @@ class TeamCreateRequest(BaseModel):
     slug: Optional[str] = Field(None, min_length=2, max_length=255, pattern="^[a-z0-9-]+$", description="URL-friendly team identifier")
     description: Optional[str] = Field(None, max_length=1000, description="Team description")
     visibility: Literal["private", "public"] = Field("private", description="Team visibility level")
-    max_members: Optional[int] = Field(default=None, description="Maximum number of team members")
+    max_members: Optional[int] = Field(default=None, ge=1, description="Maximum number of team members. If omitted, the team inherits the global MAX_MEMBERS_PER_TEAM setting at check time.")
 
     @field_validator("name")
     @classmethod
@@ -5966,7 +5968,9 @@ class TeamUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255, description="Team display name")
     description: Optional[str] = Field(None, max_length=1000, description="Team description")
     visibility: Optional[Literal["private", "public"]] = Field(None, description="Team visibility level")
-    max_members: Optional[int] = Field(default=None, description="Maximum number of team members")
+    max_members: Optional[int] = Field(
+        default=None, ge=1, description="Maximum number of team members. Set to null to clear a per-team override and revert to the global MAX_MEMBERS_PER_TEAM setting."
+    )
 
     @field_validator("name")
     @classmethod
@@ -6059,7 +6063,7 @@ class TeamResponse(BaseModel):
     created_by: str = Field(..., description="Email of team creator")
     is_personal: bool = Field(..., description="Whether this is a personal team")
     visibility: Optional[Literal["private", "public"]] = Field(..., description="Team visibility level")
-    max_members: Optional[int] = Field(None, description="Maximum number of members allowed")
+    max_members: Optional[int] = Field(None, description="Per-team member limit override. Null means the team uses the global MAX_MEMBERS_PER_TEAM setting.")
     member_count: int = Field(..., description="Current number of team members")
     created_at: datetime = Field(..., description="Team creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
@@ -6077,6 +6081,7 @@ class TeamMemberResponse(BaseModel):
         joined_at: When the member joined
         invited_by: Email of user who invited this member
         is_active: Whether the membership is active
+        grant_source: Origin of the grant (e.g., 'sso', 'manual', 'bootstrap', 'auto')
 
     Examples:
         >>> member = TeamMemberResponse(
@@ -6100,6 +6105,7 @@ class TeamMemberResponse(BaseModel):
     joined_at: datetime = Field(..., description="When the member joined")
     invited_by: Optional[str] = Field(None, description="Email of user who invited this member")
     is_active: bool = Field(..., description="Whether the membership is active")
+    grant_source: Optional[str] = Field(None, description="Origin of the grant (e.g., 'sso', 'manual', 'bootstrap', 'auto')")
 
 
 class PaginatedTeamMembersResponse(BaseModel):
