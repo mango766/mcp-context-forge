@@ -147,3 +147,74 @@ class TestAdminUI:
         admin_page.page.set_viewport_size({"width": 1280, "height": 800})
         admin_page.page.wait_for_timeout(300)
         expect(sidebar).to_be_visible()
+
+    def test_scroll_reset_on_tab_navigation(self, admin_page: AdminPage):
+        """Test that tab navigation resets scroll position to top (#3748)."""
+        admin_page.navigate()
+
+        # Click on servers tab and wait for content to load
+        admin_page.click_servers_tab()
+        admin_page.page.wait_for_selector("#catalog-panel", state="visible", timeout=10000)
+
+        # Get the main scroll container
+        main_container = admin_page.page.locator("[data-scroll-container]")
+        expect(main_container).to_be_attached()
+
+        # Scroll down in the main content area
+        admin_page.page.evaluate(
+            """() => {
+                const container = document.querySelector('[data-scroll-container]');
+                if (container) {
+                    container.scrollTop = 500;
+                }
+            }"""
+        )
+        admin_page.page.wait_for_timeout(200)
+
+        # Verify scroll position is not at top
+        scroll_pos = admin_page.page.evaluate(
+            """() => {
+                const container = document.querySelector('[data-scroll-container]');
+                return container ? container.scrollTop : 0;
+            }"""
+        )
+        assert scroll_pos > 0, "Scroll position should be greater than 0 after scrolling"
+
+        # Switch to tools tab
+        admin_page.click_tools_tab()
+        admin_page.page.wait_for_selector("#tools-panel", state="visible", timeout=10000)
+
+        # Wait for scroll reset animation frame
+        admin_page.page.wait_for_timeout(100)
+
+        # Verify scroll position was reset to top
+        scroll_pos_after = admin_page.page.evaluate(
+            """() => {
+                const container = document.querySelector('[data-scroll-container]');
+                return container ? container.scrollTop : 0;
+            }"""
+        )
+        assert scroll_pos_after == 0, f"Scroll position should be 0 after tab switch, but got {scroll_pos_after}"
+
+        # Test again with different tabs to ensure consistency
+        admin_page.page.evaluate(
+            """() => {
+                const container = document.querySelector('[data-scroll-container]');
+                if (container) {
+                    container.scrollTop = 300;
+                }
+            }"""
+        )
+        admin_page.page.wait_for_timeout(200)
+
+        admin_page.click_gateways_tab()
+        admin_page.page.wait_for_selector("#gateways-panel", state="visible", timeout=10000)
+        admin_page.page.wait_for_timeout(100)
+
+        scroll_pos_final = admin_page.page.evaluate(
+            """() => {
+                const container = document.querySelector('[data-scroll-container]');
+                return container ? container.scrollTop : 0;
+            }"""
+        )
+        assert scroll_pos_final == 0, f"Scroll position should be 0 after second tab switch, but got {scroll_pos_final}"

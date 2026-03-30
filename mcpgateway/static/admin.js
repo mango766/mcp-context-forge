@@ -8805,10 +8805,15 @@ function showTab(tabName) {
             panel.classList.remove("hidden");
 
             // Reset scroll position on the main content area
-            const mainContent = document.querySelector('main.overflow-y-auto');
-            if (mainContent) {
-                mainContent.scrollTop = 0;
-            }
+            // Use requestAnimationFrame to ensure DOM updates have completed
+            requestAnimationFrame(() => {
+                // Try data attribute first (most specific), fall back to class selector
+                const mainContent = document.querySelector('[data-scroll-container]')
+                    || document.querySelector('main.overflow-y-auto');
+                if (mainContent) {
+                    mainContent.scrollTop = 0;
+                }
+            });
         } else {
             console.error(`Panel ${tabName}-panel not found`);
             const fallbackTab = getDefaultTabName();
