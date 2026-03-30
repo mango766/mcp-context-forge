@@ -94,7 +94,7 @@ from mcpgateway.middleware.security_headers import SecurityHeadersMiddleware
 from mcpgateway.middleware.token_scoping import token_scoping_middleware
 from mcpgateway.middleware.validation_middleware import ValidationMiddleware
 from mcpgateway.observability import init_telemetry
-from mcpgateway.plugins.framework import HttpHookType, PluginError, PluginManager, PluginViolationError
+from mcpgateway.plugins.framework import HttpHookType, PluginConfig, PluginError, DBPluginManager, PluginViolationError, set_plugin_manager
 from mcpgateway.plugins.framework.constants import PLUGIN_VIOLATION_CODE_MAPPING, PluginViolationCode, VALID_HTTP_STATUS_CODES
 from mcpgateway.routers.server_well_known import router as server_well_known_router
 from mcpgateway.routers.well_known import router as well_known_router
@@ -202,8 +202,9 @@ if _PLUGINS_ENABLED:
     _plugin_settings = settings.plugins
     # First-Party
     from mcpgateway.plugins.policy import HOOK_PAYLOAD_POLICIES  # noqa: E402
-
-    plugin_manager: PluginManager | None = PluginManager(_plugin_settings.config_file, timeout=_plugin_settings.plugin_timeout, hook_policies=HOOK_PAYLOAD_POLICIES)
+    # Here we should use the New plugin manager that loads from DB
+    plugin_manager: DBPluginManager | None = DBPluginManager(_plugin_settings.config_file, timeout=_plugin_settings.plugin_timeout, hook_policies=HOOK_PAYLOAD_POLICIES)
+    set_plugin_manager(plugin_manager)
 else:
     plugin_manager = None  # pylint: disable=invalid-name
 
@@ -1606,6 +1607,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             logger.debug("plugin_manager.initialize() starting...")
             try:
                 await plugin_manager.initialize()
+                # Set the global plugin manager
+                set_plugin_manager(plugin_manager)
                 logger.info(f"Plugin manager initialized with {plugin_manager.plugin_count} plugins")
             except Exception as diag_exc:
                 logger.error(f"plugin_manager.initialize() failed: {diag_exc}", exc_info=True)
@@ -4322,6 +4325,35 @@ async def server_get_prompts(
         token_teams = []  # Non-admin without teams = public-only (secure default)
     prompts = await prompt_service.list_server_prompts(db, server_id=server_id, include_inactive=include_inactive, include_metrics=include_metrics, user_email=user_email, token_teams=token_teams)
     return [prompt.model_dump(by_alias=True) for prompt in prompts]
+
+
+
+@server_router.post("/{server_id}/plugins", response_model=List[PluginConfig])
+# @require_permission("servers.read")
+async def set_plugins_config(request: Request, server_id: str, body: List[PluginConfig]):
+    """Set the plugin configuration for a virtual server.
+
+    Replaces the tenant-level plugin list for the given server and triggers a
+    hot-reload so the new configuration takes effect immediately without
+    restarting the gateway.
+
+    Args:
+        request (Request): The FastAPI request object.
+        server_id (str): The ID of the virtual server whose plugin config is being updated.
+        body (List[PluginConfig]): Ordered list of plugin configuration objects to apply.
+
+    Returns:
+        List[PluginConfig]: The plugin configuration that was applied.
+
+    Raises:
+        HTTPException 503: If the plugin manager is not enabled (PLUGINS_ENABLED=false).
+    """
+    if plugin_manager is None:
+        raise HTTPException(status_code=503, detail="Plugin manager not enabled")
+    plugin_manager.set_tenant_config(server_id, [p.model_dump() for p in body])
+    await plugin_manager.reload_tenant(server_id)
+    return body
+
 
 
 ##################

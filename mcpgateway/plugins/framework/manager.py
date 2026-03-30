@@ -44,7 +44,7 @@ from mcpgateway.plugins.framework.hooks.policies import apply_policy, DefaultHoo
 from mcpgateway.plugins.framework.loader.config import ConfigLoader
 from mcpgateway.plugins.framework.loader.plugin import PluginLoader
 from mcpgateway.plugins.framework.memory import copyonwrite
-from mcpgateway.plugins.framework.models import Config, GlobalContext, PluginContext, PluginContextTable, PluginErrorModel, PluginMode, PluginPayload, PluginResult
+from mcpgateway.plugins.framework.models import Config, GlobalContext, PluginContext, PluginContextTable, PluginErrorModel, PluginMode, PluginPayload, PluginResult, PluginSettings, PluginConfig
 from mcpgateway.plugins.framework.observability import current_trace_id, ObservabilityProvider
 from mcpgateway.plugins.framework.registry import PluginInstanceRegistry
 from mcpgateway.plugins.framework.settings import settings
@@ -538,10 +538,11 @@ class PluginManager:
 
     def __init__(
         self,
-        config: str = "",
+        config: Config | str = "",
         timeout: int = DEFAULT_PLUGIN_TIMEOUT,
         observability: Optional[ObservabilityProvider] = None,
         hook_policies: Optional[dict[str, HookPayloadPolicy]] = None,
+        singleton: bool = True
     ):
         """Initialize plugin manager.
 
@@ -568,45 +569,64 @@ class PluginManager:
             >>> # Initialize with custom timeout
             >>> manager = PluginManager("plugins/config.yaml", timeout=60)
         """
-        self.__dict__ = self.__shared_state
+        if singleton:
+            self.__dict__ = self.__shared_state
+            # Only initialize once (first instance when shared state is empty)
+            # Use lock to prevent race condition in multi-threaded environments
+            if not self.__shared_state:
+                with self.__lock:
+                    # Double-check after acquiring lock (another thread may have initialized)
+                    if not self.__shared_state:
+                        if config:
+                            self._config = ConfigLoader.load_config(config)
+                            self._config_path = config
 
-        # Only initialize once (first instance when shared state is empty)
-        # Use lock to prevent race condition in multi-threaded environments
-        if not self.__shared_state:
-            with self.__lock:
-                # Double-check after acquiring lock (another thread may have initialized)
-                if not self.__shared_state:
-                    if config:
-                        self._config = ConfigLoader.load_config(config)
-                        self._config_path = config
+                        # Update executor with timeout, observability, and policies
+                        self._executor = PluginExecutor(
+                            config=self._config,
+                            timeout=timeout,
+                            observability=observability,
+                            hook_policies=hook_policies,
+                        )
+            elif hook_policies:
+                # Allow hook policies to be injected after initial Borg creation.
+                # This handles the case where the first PluginManager instantiation
+                # (e.g. from a service) didn't have policies, but a later one does.
+                with self.__lock:
+                    executor = self._get_executor()
+                    # Only update timeout if caller provided a non-default value
+                    if timeout != DEFAULT_PLUGIN_TIMEOUT:
+                        executor.timeout = timeout
+                    if not executor.hook_policies:
+                        executor.hook_policies = hook_policies
+                    elif executor.hook_policies != hook_policies:
+                        logger.warning("PluginManager: hook_policies already set; ignoring new policies (call reset() first to replace them)")
+                    if observability and not executor.observability:
+                        executor.observability = observability
+            elif self._executor is None:
+                # Defensive initialization for unusual state transitions in tests.
+                with self.__lock:
+                    if self._executor is None:
+                        self._executor = PluginExecutor(config=self._config, timeout=timeout, observability=observability)
 
-                    # Update executor with timeout, observability, and policies
-                    self._executor = PluginExecutor(
-                        config=self._config,
-                        timeout=timeout,
-                        observability=observability,
-                        hook_policies=hook_policies,
-                    )
-        elif hook_policies:
-            # Allow hook policies to be injected after initial Borg creation.
-            # This handles the case where the first PluginManager instantiation
-            # (e.g. from a service) didn't have policies, but a later one does.
-            with self.__lock:
-                executor = self._get_executor()
-                # Only update timeout if caller provided a non-default value
-                if timeout != DEFAULT_PLUGIN_TIMEOUT:
-                    executor.timeout = timeout
-                if not executor.hook_policies:
-                    executor.hook_policies = hook_policies
-                elif executor.hook_policies != hook_policies:
-                    logger.warning("PluginManager: hook_policies already set; ignoring new policies (call reset() first to replace them)")
-                if observability and not executor.observability:
-                    executor.observability = observability
-        elif self._executor is None:
-            # Defensive initialization for unusual state transitions in tests.
-            with self.__lock:
-                if self._executor is None:
-                    self._executor = PluginExecutor(config=self._config, timeout=timeout, observability=observability)
+        else:
+            if isinstance(config, str) and config:
+                self._config = ConfigLoader.load_config(config)
+            elif isinstance(config, Config):
+                self._config = config
+            else:
+                self._config = None
+            self._registry = PluginInstanceRegistry()
+            self._loader = PluginLoader()
+            self._executor = PluginExecutor(
+                config=self._config,
+                timeout=timeout,
+                observability=observability,
+                hook_policies=hook_policies,
+            )
+            self._initialized = False
+            self._async_lock = None
+            self.__lock = threading.Lock()
 
     def _get_executor(self) -> PluginExecutor:
         """Get plugin executor, creating it lazily if necessary.
@@ -948,3 +968,220 @@ class PluginManager:
         if not isinstance(payload, PluginPayload):
             raise ValueError(f"When payload_as_json=False, payload must be a PluginPayload, got {type(payload)}")
         return await self._get_executor().execute_plugin(hook_ref, payload, context, violations_as_exceptions)
+
+
+class PluginManagerFactory:
+    """Manages global and tenant-specific PluginManager instances."""
+
+    def __init__(
+        self,
+        timeout: int = DEFAULT_PLUGIN_TIMEOUT,
+        observability: Optional[ObservabilityProvider] = None,
+        hook_policies: Optional[dict[str, HookPayloadPolicy]] = None,
+    ) -> None:
+        self._global_config: Optional[Config] = None
+        self._timeout = timeout
+        self._observability = observability
+        self._hook_policies = hook_policies
+        self._managers: dict[str, PluginManager] = {}  # server_id → manager
+        self._global_manager: Optional[PluginManager] = None
+        self._lock = asyncio.Lock()
+
+    async def initialize(self) -> None:
+        """Load global config and initialize the global manager."""
+        self._global_config = await self.load_global_config()
+        self._global_manager = await self._create_manager(self._global_config)
+
+    async def get_manager(self, server_id: Optional[str] = None) -> PluginManager:
+        """Return the global or tenant-specific PluginManager."""
+
+        if server_id is None:
+            return self._global_manager
+
+        # Return cached manager
+        if server_id in self._managers:
+            return self._managers[server_id]
+
+        async with self._lock:
+            if server_id in self._managers:
+                return self._managers[server_id]
+            else:
+                # create new manager
+                manager = await self._create_server_manager(server_id)
+                self._managers[server_id] = manager
+                return manager
+
+    async def _create_server_manager(self, server_id: str) -> PluginManager:
+        """Create a server-specific PluginManager using merged config."""
+        server_config = await self.load_tenant_config(server_id)
+
+        # If no tenant-specific changes, reuse global manager
+        if server_config is self._global_config or server_config == self._global_config:
+            return self._global_manager
+
+        return await self._create_manager(server_config)
+
+    async def _create_manager(self, config: Config) -> PluginManager:
+        """Instantiate a PluginManager and initialize it."""
+        manager = PluginManager(
+            config=config,
+            timeout=self._timeout,
+            observability=self._observability,
+            hook_policies=self._hook_policies,
+            singleton=False,
+        )
+        await manager.initialize()
+        return manager
+
+    async def load_tenant_config(self, server_id: str) -> Config:
+        """
+        Return a Config. It should merge the tenant_config for server_id with the global config or return the global config
+        """
+        raise NotImplementedError
+
+    @property
+    def _initialized(self) -> bool:
+        """True once the global manager has been initialized."""
+        return self._global_manager is not None
+
+    @property
+    def config(self) -> Optional[Config]:
+        """Expose the global config so callers can read plugin_settings without knowing the internal attribute name."""
+        return self._global_config
+
+    @property
+    def _config(self) -> Optional[Config]:
+        return self._global_config
+
+    @property
+    def plugin_count(self) -> int:
+        return self._global_manager.plugin_count if self._global_manager else 0
+
+    @property
+    def _registry(self):
+        return self._global_manager._registry if self._global_manager else None  # pylint: disable=protected-access
+
+    def has_hooks_for(self, hook_type: str, server_id: Optional[str] = None) -> bool:
+        """Check if the manager has specific hooks"""
+        if server_id and server_id in self._managers:
+            return self._managers[server_id].has_hooks_for(hook_type)
+        return self._global_manager.has_hooks_for(hook_type) if self._global_manager else False
+
+    async def reload_tenant(self, server_id: str) -> None:
+
+        """Reload a tenant manager."""
+        new_manager = await self._create_server_manager(server_id)
+        async with self._lock:
+            old_manager = self._managers.get(server_id)
+            self._managers[server_id] = new_manager
+        if old_manager:
+            asyncio.create_task(self._deferred_shutdown(old_manager))
+
+    async def reload_global(self) -> None:
+        """Reload global config and all tenant managers."""
+        self._global_config = await self.load_global_config()
+        new_global = await self._create_manager(self._global_config)
+
+        new_managers: dict[str, PluginManager] = {}
+        for tid in list(self._managers.keys()):
+            new_managers[tid] = await self._create_server_manager(tid)
+
+        async with self._lock:
+            old_global = self._global_manager
+            old_managers = dict(self._managers)
+            self._global_manager = new_global
+            self._managers = new_managers
+
+        if old_global:
+            asyncio.create_task(self._deferred_shutdown(old_global))
+        for manager in old_managers.values():
+            asyncio.create_task(self._deferred_shutdown(manager))
+
+    async def _deferred_shutdown(self, manager: PluginManager, grace_seconds: float = 30.0) -> None:
+        await asyncio.sleep(grace_seconds)
+        await manager.shutdown()
+
+    async def shutdown(self) -> None:
+        async with self._lock:
+            managers_to_shutdown = list(self._managers.values())
+            global_to_shutdown = self._global_manager
+            self._managers.clear()
+            self._global_manager = None
+
+        for manager in managers_to_shutdown:
+            await manager.shutdown()
+        if global_to_shutdown:
+            await global_to_shutdown.shutdown()
+
+
+class DBPluginManager(PluginManagerFactory):
+    def __init__(
+        self,
+        yaml_path: str,
+        timeout: int = DEFAULT_PLUGIN_TIMEOUT,
+        observability: Optional[ObservabilityProvider] = None,
+        hook_policies: Optional[dict[str, HookPayloadPolicy]] = None
+    ):
+        super().__init__(timeout, observability, hook_policies)
+        self._yaml_path = yaml_path
+        self._tenant_configs: dict[str, list[dict]] = {}
+
+    def set_tenant_config(self, server_id: str, plugin_configs: list[dict]) -> None:
+        """Store in-memory plugin config overrides for a tenant."""
+        self._tenant_configs[server_id] = plugin_configs
+
+    async def load_global_config(self) -> Config:
+        return ConfigLoader.load_config(self._yaml_path)
+
+    async def load_tenant_config(self, server_id: str) -> Config:
+        """
+        Load the tenant-specific plugin config and merge it on top of the global config.
+        Only merges the 'config', 'mode', and 'priority' fields. Everything else
+        remains from the global YAML.
+        """
+        base_config = self._global_config
+        if base_config is None:
+            base_config = await self.load_global_config()
+            self._global_config = base_config
+        config_override = await self._load_config_from_db(server_id)
+        if not config_override:
+            return base_config
+        return self._merge_tenant_overrides(base_config, config_override)
+
+    def _merge_tenant_overrides(self, base_config: Config, config_override: list[dict]) -> Config:
+        """
+        Merge tenant plugin overrides into the base config.
+
+        Only 'config', 'mode', and 'priority' are overridden.
+        """
+        override_map = {
+            plugin_config["name"]: plugin_config
+            for plugin_config in config_override
+        }
+        merged_plugins = []
+        for plugin in base_config.plugins or []:
+            override = override_map.get(plugin.name)
+            if not override:
+                merged_plugins.append(plugin)
+                continue
+            merged_plugins.append(self._merge_plugin(plugin, override))
+        return base_config.model_copy(update={"plugins": merged_plugins})
+
+    def _merge_plugin(self, plugin, override: dict):
+        """
+        Merge a single plugin with its tenant override.
+        """
+        merged_config = {
+            **(plugin.config or {}),
+            **(override.get("config") or {}),
+        }
+        return plugin.model_copy(
+            update={
+                "config": merged_config,
+                "mode": override.get("mode", plugin.mode),
+                "priority": override.get("priority", plugin.priority),
+            }
+        )
+
+    async def _load_config_from_db(self, server_id: str) -> list[dict]:
+        return self._tenant_configs.get(server_id, [])

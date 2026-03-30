@@ -65,7 +65,7 @@ from mcpgateway.plugins.framework import (
     HttpHeaderPayload,
     PluginContextTable,
     PluginError,
-    PluginManager,
+    DBPluginManager,
     PluginViolationError,
     ToolHookType,
     ToolPostInvokePayload,
@@ -588,7 +588,7 @@ class ToolService(BaseService):
         """
         self._event_service = EventService(channel_name="mcpgateway:tool_events")
         self._http_client = ResilientHttpClient(client_args={"timeout": settings.federation_timeout, "verify": not settings.skip_ssl_verify})
-        self._plugin_manager: PluginManager | None = get_plugin_manager()
+        self._plugin_manager: DBPluginManager | None = get_plugin_manager()
         self.oauth_manager = OAuthManager(
             request_timeout=int(settings.oauth_request_timeout if hasattr(settings, "oauth_request_timeout") else 30),
             max_retries=int(settings.oauth_max_retries if hasattr(settings, "oauth_max_retries") else 3),
@@ -3181,7 +3181,9 @@ class ToolService(BaseService):
             if gateway_metadata:
                 hook_global_context.metadata[GATEWAY_METADATA] = gateway_metadata
 
-            pre_result, _ = await self._plugin_manager.invoke_hook(
+            _pm = self._plugin_manager or get_plugin_manager()
+            server_plugin_manager = await _pm.get_manager(hook_global_context.server_id)
+            pre_result, _ = await server_plugin_manager.invoke_hook(
                 ToolHookType.TOOL_PRE_INVOKE,
                 payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=dict(runtime_headers))),
                 global_context=hook_global_context,
@@ -3766,6 +3768,9 @@ class ToolService(BaseService):
             context_server_id = tool_gateway_id if tool_gateway_id and isinstance(tool_gateway_id, str) else "unknown"
             global_context = GlobalContext(request_id=request_id, server_id=context_server_id, tenant_id=None, user=app_user_email)
 
+        _pm = self._plugin_manager or get_plugin_manager()
+        server_plugin_manager = await _pm.get_manager(global_context.server_id) if _pm else None
+
         start_time = time.monotonic()
         success = False
         error_message = None
@@ -3857,11 +3862,11 @@ class ToolService(BaseService):
                             session_short = mcp_session_id[:8] if len(mcp_session_id) >= 8 else mcp_session_id
                             logger.debug(f"[AFFINITY] Worker {worker_id} | Session {session_short}... | Tool: {name} | Normalized MCP-Session-Id → x-mcp-session-id for pool affinity")
 
-                    if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
+                    if server_plugin_manager and server_plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
                         # Use pre-created Pydantic model from Phase 2 (no ORM access)
                         if tool_metadata:
                             global_context.metadata[TOOL_METADATA] = tool_metadata
-                        pre_result, context_table = await self._plugin_manager.invoke_hook(
+                        pre_result, context_table = await server_plugin_manager.invoke_hook(
                             ToolHookType.TOOL_PRE_INVOKE,
                             payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=headers)),
                             global_context=global_context,
@@ -3934,8 +3939,20 @@ class ToolService(BaseService):
                                 exc_info=True,
                             )
 
-                        if self._plugin_manager:
-                            await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                        if server_plugin_manager:
+                            if context_table:
+                                for ctx in context_table.values():
+                                    ctx.set_state("cb_timeout_failure", True)
+
+                            if server_plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                                timeout_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation timed out after {effective_timeout}s")], is_error=True)
+                                await server_plugin_manager.invoke_hook(
+                                    ToolHookType.TOOL_POST_INVOKE,
+                                    payload=ToolPostInvokePayload(name=name, result=timeout_error_result.model_dump(by_alias=True)),
+                                    global_context=global_context,
+                                    local_contexts=context_table,
+                                    violations_as_exceptions=False,
+                                )
 
                         raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
                     response.raise_for_status()
@@ -4258,8 +4275,20 @@ class ToolService(BaseService):
                                     exc_info=True,
                                 )
 
-                            if self._plugin_manager:
-                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                            if server_plugin_manager:
+                                if context_table:
+                                    for ctx in context_table.values():
+                                        ctx.set_state("cb_timeout_failure", True)
+
+                                if server_plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                                    timeout_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation timed out after {effective_timeout}s")], is_error=True)
+                                    await server_plugin_manager.invoke_hook(
+                                        ToolHookType.TOOL_POST_INVOKE,
+                                        payload=ToolPostInvokePayload(name=name, result=timeout_error_result.model_dump(by_alias=True)),
+                                        global_context=global_context,
+                                        local_contexts=context_table,
+                                        violations_as_exceptions=False,
+                                    )
 
                             raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
                         except BaseException as e:
@@ -4397,8 +4426,20 @@ class ToolService(BaseService):
                                     exc_info=True,
                                 )
 
-                            if self._plugin_manager:
-                                await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                            if server_plugin_manager:
+                                if context_table:
+                                    for ctx in context_table.values():
+                                        ctx.set_state("cb_timeout_failure", True)
+
+                                if server_plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                                    timeout_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation timed out after {effective_timeout}s")], is_error=True)
+                                    await server_plugin_manager.invoke_hook(
+                                        ToolHookType.TOOL_POST_INVOKE,
+                                        payload=ToolPostInvokePayload(name=name, result=timeout_error_result.model_dump(by_alias=True)),
+                                        global_context=global_context,
+                                        local_contexts=context_table,
+                                        violations_as_exceptions=False,
+                                    )
 
                             raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
                         except BaseException as e:
@@ -4426,13 +4467,13 @@ class ToolService(BaseService):
                     # REMOVED: Redundant gateway query - gateway already eager-loaded via joinedload
                     # tool_gateway = db.execute(select(DbGateway).where(DbGateway.id == tool_gateway_id)...)
 
-                    if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
+                    if server_plugin_manager and server_plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
                         # Use pre-created Pydantic models from Phase 2 (no ORM access)
                         if tool_metadata:
                             global_context.metadata[TOOL_METADATA] = tool_metadata
                         if gateway_metadata:
                             global_context.metadata[GATEWAY_METADATA] = gateway_metadata
-                        pre_result, context_table = await self._plugin_manager.invoke_hook(
+                        pre_result, context_table = await server_plugin_manager.invoke_hook(
                             ToolHookType.TOOL_PRE_INVOKE,
                             payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=headers)),
                             global_context=global_context,
@@ -4477,10 +4518,10 @@ class ToolService(BaseService):
                     headers = {"Content-Type": "application/json"}
 
                     # Plugin hook: tool pre-invoke for A2A
-                    if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
+                    if server_plugin_manager and server_plugin_manager.has_hooks_for(ToolHookType.TOOL_PRE_INVOKE) and not skip_pre_invoke:
                         if tool_metadata:
                             global_context.metadata[TOOL_METADATA] = tool_metadata
-                        pre_result, context_table = await self._plugin_manager.invoke_hook(
+                        pre_result, context_table = await server_plugin_manager.invoke_hook(
                             ToolHookType.TOOL_PRE_INVOKE,
                             payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(root=headers)),
                             global_context=global_context,
@@ -4564,7 +4605,19 @@ class ToolService(BaseService):
 
                         # Trigger circuit breaker on timeout
                         if self._plugin_manager:
-                            await self._run_timeout_post_invoke(name, effective_timeout, global_context, context_table)
+                            if context_table:
+                                for ctx in context_table.values():
+                                    ctx.set_state("cb_timeout_failure", True)
+
+                            if server_plugin_manager and server_plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                                timeout_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation timed out after {effective_timeout}s")], is_error=True)
+                                await server_plugin_manager.invoke_hook(
+                                    ToolHookType.TOOL_POST_INVOKE,
+                                    payload=ToolPostInvokePayload(name=name, result=timeout_error_result.model_dump(by_alias=True)),
+                                    global_context=global_context,
+                                    local_contexts=context_table,
+                                    violations_as_exceptions=False,
+                                )
 
                         raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
 
@@ -4585,8 +4638,8 @@ class ToolService(BaseService):
                     tool_result = ToolResult(content=[TextContent(type="text", text="Invalid tool type")], is_error=True)
 
                 # Plugin hook: tool post-invoke
-                if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
-                    post_result, _ = await self._plugin_manager.invoke_hook(
+                if server_plugin_manager and server_plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                    post_result, _ = await server_plugin_manager.invoke_hook(
                         ToolHookType.TOOL_POST_INVOKE,
                         payload=ToolPostInvokePayload(name=name, result=tool_result.model_dump(by_alias=True)),
                         global_context=global_context,
@@ -4675,19 +4728,13 @@ class ToolService(BaseService):
                     span.set_attribute("error", True)
                     span.set_attribute("error.message", error_message)
 
-                # Notify plugins of the failure so circuit breaker / retry plugin can track it.
-                # Capture the result so we can honour a retry_delay_ms signal from the retry plugin.
-                # When the exception carries an HTTP status code (e.g. httpx.HTTPStatusError),
-                # include it in structuredContent so the retry plugin can honour retry_on_status
-                # instead of blindly retrying every exception.
+                # Notify plugins of the failure so circuit breaker can track it
+                # This ensures HTTP 4xx/5xx errors and MCP failures are counted
                 exc_post_result = None
-                if self._plugin_manager and self._plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
+                if server_plugin_manager and server_plugin_manager.has_hooks_for(ToolHookType.TOOL_POST_INVOKE):
                     try:
-                        exc_structured: Optional[Dict[str, Any]] = None
-                        if isinstance(root_cause, httpx.HTTPStatusError):
-                            exc_structured = {"status_code": root_cause.response.status_code}
-                        exception_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation failed: {error_message}")], is_error=True, structured_content=exc_structured)
-                        exc_post_result, _ = await self._plugin_manager.invoke_hook(
+                        exception_error_result = ToolResult(content=[TextContent(type="text", text=f"Tool invocation failed: {error_message}")], is_error=True)
+                        exc_post_result, _ = await server_plugin_manager.invoke_hook(
                             ToolHookType.TOOL_POST_INVOKE,
                             payload=ToolPostInvokePayload(name=name, result=exception_error_result.model_dump(by_alias=True)),
                             global_context=global_context,

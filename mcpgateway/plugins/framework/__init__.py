@@ -23,7 +23,7 @@ from mcpgateway.plugins.framework.external.mcp.server import ExternalPluginServe
 from mcpgateway.plugins.framework.hooks.registry import HookRegistry, get_hook_registry
 from mcpgateway.plugins.framework.loader.config import ConfigLoader
 from mcpgateway.plugins.framework.loader.plugin import PluginLoader
-from mcpgateway.plugins.framework.manager import PluginManager
+from mcpgateway.plugins.framework.manager import PluginManager, DBPluginManager
 from mcpgateway.plugins.framework.observability import ObservabilityProvider
 from mcpgateway.plugins.framework.hooks.http import (
     HttpAuthCheckPermissionPayload,
@@ -63,44 +63,42 @@ from mcpgateway.plugins.framework.models import (
 )
 from mcpgateway.plugins.framework.utils import get_attr
 
-# Plugin manager singleton (lazy initialization)
-_plugin_manager: Optional[PluginManager] = None
+# Plugin manager singleton — set once by main.py before service imports
+_plugin_manager: Optional[DBPluginManager] = None
 
 
-def get_plugin_manager(observability: Optional[ObservabilityProvider] = None) -> Optional[PluginManager]:
-    """Get or initialize the plugin manager singleton.
-
-    This is the public API for accessing the plugin manager from anywhere in the application.
-    The plugin manager is lazily initialized on first access if plugins are enabled.
+def set_plugin_manager(manager: Optional[DBPluginManager]) -> None:
+    """Set the plugin manager singleton.
 
     Args:
-        observability: Optional observability provider implementing ObservabilityProvider protocol.
+        manager: DBPluginManager instance to set as the singleton, or None to clear it.
+
+    Examples:
+        >>> from mcpgateway.plugins.framework import set_plugin_manager
+        >>> set_plugin_manager(None)
+    """
+    global _plugin_manager  # pylint: disable=global-statement
+    _plugin_manager = manager
+
+
+def get_plugin_manager(observability: Optional[ObservabilityProvider] = None) -> Optional[DBPluginManager]:
+    """Get the plugin manager singleton.
+
+    This is the public API for accessing the plugin manager from anywhere in the application.
+    The singleton is set by main.py via set_plugin_manager() before service modules are imported.
+
+    Args:
+        observability: Unused; retained for backwards compatibility.
 
     Returns:
-        PluginManager instance if plugins are enabled, None otherwise.
+        DBPluginManager instance if plugins are enabled and initialized, None otherwise.
 
     Examples:
         >>> from mcpgateway.plugins.framework import get_plugin_manager
         >>> pm = get_plugin_manager()
-        >>> # Returns PluginManager if plugins are enabled, None otherwise
-        >>> pm is None or isinstance(pm, PluginManager)
+        >>> pm is None or isinstance(pm, DBPluginManager)
         True
     """
-    global _plugin_manager  # pylint: disable=global-statement
-    if _plugin_manager is None:
-        # Use plugin framework's own settings instead of mcpgateway.config
-        from mcpgateway.plugins.framework.settings import settings  # pylint: disable=import-outside-toplevel
-
-        if settings.enabled:
-            # Import concrete policies from the gateway side
-            from mcpgateway.plugins.policy import HOOK_PAYLOAD_POLICIES  # pylint: disable=import-outside-toplevel
-
-            _plugin_manager = PluginManager(
-                settings.config_file,
-                timeout=settings.plugin_timeout,
-                observability=observability,
-                hook_policies=HOOK_PAYLOAD_POLICIES,
-            )
     return _plugin_manager
 
 
@@ -115,6 +113,7 @@ __all__ = [
     "get_attr",
     "get_hook_registry",
     "get_plugin_manager",
+    "set_plugin_manager",
     "GlobalContext",
     "HookRegistry",
     "HttpAuthCheckPermissionPayload",
@@ -139,6 +138,7 @@ __all__ = [
     "PluginErrorModel",
     "PluginLoader",
     "PluginManager",
+    "DBPluginManager",
     "PluginMode",
     "PluginPayload",
     "PluginResult",
