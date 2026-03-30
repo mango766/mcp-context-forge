@@ -13,10 +13,10 @@ on API tokens, ensuring tokens can only be used during specified time windows.
 from datetime import datetime
 import logging
 from typing import Any, Dict
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Third-Party
 from fastapi import HTTPException, status
-import pytz
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -104,10 +104,10 @@ def validate_time_restrictions(payload: Dict[str, Any]) -> None:
 
     # Get current time in the specified timezone
     try:
-        tz = pytz.timezone(timezone_str)
-    except Exception as e:
+        tz = ZoneInfo(timezone_str)
+    except ZoneInfoNotFoundError as e:
         logger.warning(f"Invalid timezone in time_restrictions: {timezone_str}, falling back to UTC. Error: {e}")
-        tz = pytz.UTC
+        tz = ZoneInfo("UTC")
 
     now = datetime.now(tz)
     current_day = now.strftime("%A")  # e.g., "Monday", "Tuesday", etc.
