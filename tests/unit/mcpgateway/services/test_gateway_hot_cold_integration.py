@@ -632,7 +632,7 @@ class TestBranchSpecificMissingLines:
 
         mock_gateway = _make_mock_gateway(url="http://test-server:8000", name="test-gateway")
         mock_gateway.auth_type = "query_param"
-        mock_gateway.auth_query_params = {"api_key": "badly_encrypted_value"}
+        mock_gateway.auth_query_params = {"api_key": "badly_encrypted_value"}  # pragma: allowlist secret
 
         with (
             patch("mcpgateway.services.gateway_service.decode_auth", side_effect=Exception("Decryption failed")),
